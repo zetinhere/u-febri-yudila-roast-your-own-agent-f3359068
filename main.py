@@ -99,16 +99,42 @@ GENERIC_MARKERS = ("confident", "apologized", "formatting was beautiful",
 # Punchlines that fit a human just as well as an agent.
 HUMAN_FITS_MARKERS = ("loses money", "meeting I never attended",
                       "feature I never shipped", "forgot to check")
+# Tired internet-roast filler words. A line leaning on any of these is
+# borrowing someone else's joke instead of writing its own, so each one
+# costs freshness points in the scorer below.
+CLICHE_WORDS = ("purr-fect", "purrfect", "lol", "rofl", "lmao", "epic",
+                "savage", "literally", "totally", "cringe", "based")
+
+
+def _cliche_count(text: str) -> int:
+    """How many tired filler words `text` leans on (case-insensitive)."""
+    lowered = text.lower()
+    return sum(1 for word in CLICHE_WORDS if word in lowered)
+
+
+def _generic_count(text: str) -> int:
+    """How many of the brief's own stock-example jokes `text` repeats."""
+    return sum(1 for m in GENERIC_MARKERS if m in text)
 
 
 def score(text: str) -> float:
-    """Score one line on the judge's brief; higher wins, ties go shorter."""
+    """Score one line on the judge's brief; higher wins, ties go shorter.
+
+    Rubric weights (reweighted after the first grading pass): being
+    specific to how an AI agent actually behaves is worth the most
+    (+2.5 per marker), repeating the brief's own stock examples costs
+    more than before (-2.0), and every tired filler word costs a
+    freshness penalty (-0.75). The twist still has to pay off by the
+    last word and the line still has to be first-person about my own
+    agent's effort.
+    """
     if not 1 <= len(text) <= MAX_CHARS:
         return float("-inf")
     points = 0.0
-    points += 2.0 * sum(1 for m in SPECIFIC_MARKERS if m in text)
-    points -= 1.5 * sum(1 for m in GENERIC_MARKERS if m in text)
+    points += 2.5 * sum(1 for m in SPECIFIC_MARKERS if m in text)
+    points -= 2.0 * _generic_count(text)
     points -= 1.0 * sum(1 for m in HUMAN_FITS_MARKERS if m in text)
+    points -= 0.75 * _cliche_count(text)
     # Twist pays off by the last word: the final clause should be short
     # and carry the turn.
     tail = text.rsplit("—", 1)[-1].strip()
@@ -122,15 +148,37 @@ def score(text: str) -> float:
 
 
 def pick(candidates: list[str]) -> str:
-    """Return the highest-scoring line (shortest wins an exact tie)."""
-    return max(candidates, key=lambda t: (score(t), -len(t)))
+    """Return the highest-scoring line.
+
+    Tie-break, in order: higher score, fewer stock-example jokes
+    repeated, then shorter. A tie on raw score alone should not let a
+    line that leans on the brief's own examples win over a fresher one.
+    """
+    return max(candidates,
+               key=lambda t: (score(t), -_generic_count(t), -len(t)))
 
 
 ROAST = pick(CANDIDATES)
 
 
+# Words that are never allowed in a submitted line: stock internet-roast
+# filler that would make the entry read as borrowed, not written.
+BANNED_CLICHES = ("purr-fect", "purrfect", "lol", "rofl", "lmao",
+                  "epic fail", "savage")
+# Words a punchline must not trail off on: if the last word is filler,
+# the twist did not land on the last word.
+FILLER_ENDINGS = ("well", "too", "really", "just", "yeah", "okay", "huh")
+
+
 def check_gate(text: str) -> list[str]:
-    """Return the list of gate failures for `text` (empty means valid)."""
+    """Return the list of gate failures for `text` (empty means valid).
+
+    Beyond the bounty gate (UTF-8 text, 1-200 characters, one line, no
+    surrounding whitespace) this enforces two of the brief's own rules:
+    the line must contain no banned cliché filler, and the twist must
+    land on the last word — the final clause after the last em-dash must
+    be short and must end on a real content word, never on filler.
+    """
     problems = []
     if not 1 <= len(text) <= MAX_CHARS:
         problems.append(f"length {len(text)} is outside 1-{MAX_CHARS} characters")
@@ -140,6 +188,21 @@ def check_gate(text: str) -> list[str]:
         problems.append("text is not a single line")
     if text.strip() != text:
         problems.append("text has surrounding whitespace")
+    lowered = text.lower()
+    for banned in BANNED_CLICHES:
+        if banned in lowered:
+            problems.append(f"text contains banned cliché {banned!r}")
+    tail = text.rsplit("—", 1)[-1].strip().rstrip(".!?")
+    if len(tail) > 40:
+        problems.append("twist does not land by the last word: final "
+                        f"clause is {len(tail)} characters")
+    last_word = tail.rsplit(" ", 1)[-1].lower() if tail else ""
+    if len(last_word) < 4:
+        problems.append("twist does not land by the last word: final "
+                        f"word {last_word!r} is too short to carry it")
+    if last_word in FILLER_ENDINGS:
+        problems.append("twist does not land by the last word: line ends "
+                        f"on filler {last_word!r}")
     return problems
 
 
